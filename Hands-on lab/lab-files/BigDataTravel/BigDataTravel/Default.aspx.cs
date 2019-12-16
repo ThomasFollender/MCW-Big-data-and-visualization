@@ -4,7 +4,6 @@ using System.Linq;
 using System.Web;
 using System.Web.UI;
 using System.Web.UI.WebControls;
-using Microsoft.IdentityModel.Clients.ActiveDirectory;
 using System.Threading.Tasks;
 using System.Net.Http;
 using System.Collections.Specialized;
@@ -13,6 +12,7 @@ using Newtonsoft.Json.Linq;
 using System.Net.Http.Headers;
 using DarkSky.Services;
 using System.Runtime.Serialization;
+using DarkSky.Models;
 using NodaTime;
 
 namespace BigDataTravel
@@ -28,7 +28,6 @@ namespace BigDataTravel
 
         // settings
         private string mlUrl;
-        private string mlApiKey;
         private string weatherApiKey;
 
         protected void Page_Load(object sender, EventArgs e)
@@ -58,7 +57,6 @@ namespace BigDataTravel
         private void InitSettings()
         {
             mlUrl = System.Web.Configuration.WebConfigurationManager.AppSettings["mlUrl"];
-            mlApiKey = System.Web.Configuration.WebConfigurationManager.AppSettings["mlApiKey"];
             weatherApiKey = System.Web.Configuration.WebConfigurationManager.AppSettings["weatherApiKey"];
         }
 
@@ -112,7 +110,7 @@ namespace BigDataTravel
                 if (forecast == null)
                     throw new Exception("Forecast request did not succeed. Check Settings for weatherApiKey.");
 
-                PredictDelays(query, forecast).Wait();
+                await PredictDelays(query, forecast);
             }
 
             UpdateStatusDisplay(prediction, forecast);
@@ -131,7 +129,7 @@ namespace BigDataTravel
             }
 
             if (prediction == null)
-                throw new Exception("Prediction did not succeed. Check the Settings for mlUrl and mlApiKey.");
+                throw new Exception("Prediction did not succeed. Check the Settings for mlUrl.");
 
             if (prediction.ExpectDelays)
             {
@@ -153,11 +151,11 @@ namespace BigDataTravel
             try
             {
                 var weatherPrediction = await darkSky.GetForecast(departureQuery.OriginAirportLat,
-                    departureQuery.OriginAirportLong, new DarkSkyService.OptionalParameters
+                    departureQuery.OriginAirportLong, new OptionalParameters
                     {
                         ExtendHourly = true,
-                        DataBlocksToExclude = new List<ExclusionBlock> { ExclusionBlock.Flags,
-                        ExclusionBlock.Alerts, ExclusionBlock.Minutely }
+                        DataBlocksToExclude = new List<ExclusionBlocks> { ExclusionBlocks.Flags,
+                        ExclusionBlocks.Alerts, ExclusionBlocks.Minutely }
                     });
                 if (weatherPrediction.Response.Hourly.Data != null && weatherPrediction.Response.Hourly.Data.Count > 0)
                 {
@@ -227,25 +225,25 @@ namespace BigDataTravel
                         HourlyPrecip = forecast.Precipitation
                     };
 
-                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", mlApiKey);
                     client.BaseAddress = new Uri(mlUrl);
-                    var response = await client.PostAsJsonAsync("", predictionRequest).ConfigureAwait(false);
+                    var response = await client.PostAsJsonAsync("", predictionRequest);
 
                     if (response.IsSuccessStatusCode)
                     {
-                        var result = await response.Content.ReadAsStringAsync();
-                        var token = JToken.Parse(result);
-                        var parsedResult = JsonConvert.DeserializeObject<PredictionResult>((string)token);
-
-                        if (parsedResult.prediction == 1)
+                        var responseResult = await response.Content.ReadAsStringAsync();
+                        var token = JToken.Parse(responseResult);
+                        var parsedResult = JsonConvert.DeserializeObject<List<PredictionResult>>((string)token);
+                        var result = parsedResult[0];
+                        double confidence = double.Parse(result.confidence.Replace("[", string.Empty).Replace("]", string.Empty).Split(new Char[] {','})[0]);
+                        if (result.prediction == 1)
                         {
                             this.prediction.ExpectDelays = true;
-                            this.prediction.Confidence = parsedResult.probability;
+                            this.prediction.Confidence = confidence;
                         }
-                        else if (parsedResult.prediction == 0)
+                        else if (result.prediction == 0)
                         {
                             this.prediction.ExpectDelays = false;
-                            this.prediction.Confidence = parsedResult.probability;
+                            this.prediction.Confidence = confidence;
                         }
                         else
                         {
@@ -295,7 +293,7 @@ namespace BigDataTravel
     public class PredictionResult
     {
         public double prediction { get; set; }
-        public double probability { get; set; }
+        public string confidence { get; set; }
     }
 
     public class ForecastResult
